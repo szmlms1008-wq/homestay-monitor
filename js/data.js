@@ -42,6 +42,9 @@ let listings = INITIAL_LISTINGS.map(l => ({
 // 调价事件订阅者
 const listeners = [];
 
+let simulationRunning = false;
+let simulationTimer = null;
+
 // 模拟随机调价：每 5-15 秒随机选 1-3 家，价格波动 -8% ~ +8%
 function simulatePriceChange() {
   const count = 1 + Math.floor(Math.random() * 3);
@@ -50,7 +53,7 @@ function simulatePriceChange() {
     indices.add(Math.floor(Math.random() * listings.length));
   }
 
-  const changes = [];
+  const changed = [];
   indices.forEach(i => {
     const listing = listings[i];
     const changePct = (Math.random() - 0.5) * 0.16;
@@ -58,27 +61,36 @@ function simulatePriceChange() {
     listing.previousPrice = listing.currentPrice;
     listing.currentPrice = newPrice;
     listing.priceHistory.push({ time: Date.now(), price: newPrice });
-    // 只保留最近 200 条历史
     if (listing.priceHistory.length > 200) {
       listing.priceHistory = listing.priceHistory.slice(-200);
     }
-    // 入住率小幅波动
     listing.occupancyRate = Math.min(1, Math.max(0.2,
       listing.occupancyRate + (Math.random() - 0.5) * 0.05
     ));
-    changes.push(listing);
+    changed.push(listing);
   });
 
-  listeners.forEach(fn => fn(changes));
+  listeners.forEach(fn => fn(changed));
 }
 
 function startSimulation() {
+  if (simulationRunning) return;
+  simulationRunning = true;
   function tick() {
+    if (!simulationRunning) return;
     simulatePriceChange();
     const delay = 5000 + Math.random() * 10000;
-    setTimeout(tick, delay);
+    simulationTimer = setTimeout(tick, delay);
   }
   tick();
+}
+
+function stopSimulation() {
+  simulationRunning = false;
+  if (simulationTimer) {
+    clearTimeout(simulationTimer);
+    simulationTimer = null;
+  }
 }
 
 // 数据访问接口（供 api.js 调用）
@@ -99,7 +111,7 @@ const DataStore = {
 
   getPriceHistory(id) {
     const listing = listings.find(l => l.id === id);
-    return listing ? listing.priceHistory : [];
+    return listing ? [...listing.priceHistory] : [];
   },
 
   onUpdate(fn) {
@@ -111,4 +123,5 @@ const DataStore = {
   },
 
   startSimulation,
+  stopSimulation,
 };
