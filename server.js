@@ -1,79 +1,189 @@
-// server.js — 途家 API 代理 + 静态文件服务
+// server.js — 多用户版民宿竞品监控后端
 const express = require('express');
 const path = require('path');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const { db, stmts } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
+const JWT_SECRET = process.env.JWT_SECRET || 'homestay-monitor-secret-change-in-production';
+const JWT_EXPIRES = '7d';
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-// 途家 API 代理
-app.get('/api/tujia/search', async (req, res) => {
+// ====== JWT 中间件 ======
+function authRequired(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: '请先登录' });
+  }
+  try {
+    req.user = jwt.verify(auth.slice(7), JWT_SECRET);
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: '登录已过期，请重新登录' });
+  }
+}
+
+function adminRequired(req, res, next) {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: '需要管理员权限' });
+  }
+  next();
+}
+
+function logAction(userId, action, city, details) {
+  try { stmts.insertLog.run(userId, action, city, details ? JSON.stringify(details) : null); } catch (e) {}
+}
+
+// ====== Auth API ======
+app.post('/api/auth/register', (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: '用户名和密码不能为空' });
+  if (username.length < 2 || password.length < 4) return res.status(400).json({ error: '用户名至少2位，密码至少4位' });
+
+  const exists = stmts.findByUsername.get(username);
+  if (exists) return res.status(409).json({ error: '用户名已存在' });
+
+  const hash = bcrypt.hashSync(password, 10);
+  const result = stmts.createUser.run(username, hash, 'user', '大理');
+  const token = jwt.sign({ id: result.lastInsertRowid, username, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+
+  logAction(result.lastInsertRowid, 'register', null, { username });
+  res.json({ token, user: { id: result.lastInsertRowid, username, role: 'user', city: '大理' } });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  const user = stmts.findByUsername.get(username);
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: '用户名或密码错误' });
+  }
+
+  stmts.updateLastLogin.run(user.id);
+  const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
+
+  logAction(user.id, 'login', null, null);
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role, city: user.city } });
+});
+
+// ====== User API ======
+app.get('/api/me', authRequired, (req, res) => {
+  const user = stmts.findUserById.get(req.user.id);
+  if (!user) return res.status(404).json({ error: '用户不存在' });
+  res.json(user);
+});
+
+app.put('/api/me', authRequired, (req, res) => {
+  const { city } = req.body;
+  if (city) stmts.updateCity.run(city, req.user.id);
+  const user = stmts.findUserById.get(req.user.id);
+  logAction(req.user.id, 'update_profile', city, null);
+  res.json(user);
+});
+
+// ====== Competitor API ======
+app.get('/api/competitors', authRequired, (req, res) => {
+  const competitors = stmts.getCompetitors.all(req.user.id);
+  res.json(competitors.map(c => ({
+    id: c.id,
+    unitId: c.unit_id,
+    name: c.name,
+    platform: c.platform,
+    roomType: c.room_type,
+    currentPrice: c.current_price,
+    previousPrice: c.previous_price,
+    occupancyRate: c.occupancy_rate,
+    longitude: c.longitude,
+    latitude: c.latitude,
+    address: c.address,
+    rating: c.rating,
+    reviews: c.reviews,
+    distance: c.distance,
+    source: c.source,
+    isOwn: !!c.is_own,
+  })));
+});
+
+app.post('/api/competitors', authRequired, (req, res) => {
+  const item = req.body;
+  const result = stmts.addCompetitor.run(
+    req.user.id, item.unitId || null, item.name, item.platform || '途家民宿',
+    item.roomType || '', item.currentPrice || 0, item.previousPrice || 0,
+    item.occupancyRate || 0.6, item.longitude || null, item.latitude || null,
+    item.address || '', item.rating || 0, item.reviews || 0,
+    item.distance || '', item.source || 'tujia', 0
+  );
+
+  logAction(req.user.id, 'add_competitor', null, { name: item.name, price: item.currentPrice });
+  res.json({ success: true, id: result.lastInsertRowid });
+});
+
+app.delete('/api/competitors/:id', authRequired, (req, res) => {
+  const result = stmts.deleteCompetitor.run(req.params.id, req.user.id);
+  if (result.changes === 0) return res.status(404).json({ error: '竞品不存在' });
+  logAction(req.user.id, 'remove_competitor', null, { competitorId: req.params.id });
+  res.json({ success: true });
+});
+
+app.put('/api/competitors/:id', authRequired, (req, res) => {
+  const { currentPrice, previousPrice, occupancyRate } = req.body;
+  const result = stmts.updateCompetitor.run(currentPrice, previousPrice, occupancyRate, req.params.id, req.user.id);
+  if (result.changes === 0) return res.status(404).json({ error: '竞品不存在' });
+  res.json({ success: true });
+});
+
+// ====== 途家搜索代理 ======
+app.get('/api/tujia/search', authRequired, async (req, res) => {
   const { city, page = 0, size = 20 } = req.query;
   if (!city) return res.status(400).json({ error: 'city required' });
 
-  try {
-    const payload = JSON.stringify({
-      conditions: [{ type: 1, value: city }],
-      onlyReturnTotalCount: false,
-      pageIndex: parseInt(page),
-      pageSize: Math.min(parseInt(size), 50),
-      returnFilterConditions: true,
-      returnGeoConditions: true,
-      url: '',
-    });
+  logAction(req.user.id, 'search', city, null);
 
+  try {
     const r = await fetch('https://www.tujia.com/bingo/pc/search/searchhouse', {
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        Referer: 'https://www.tujia.com/',
-        Accept: 'application/json',
+        Referer: 'https://www.tujia.com/', Accept: 'application/json',
       },
-      body: payload,
+      body: JSON.stringify({
+        conditions: [{ type: 1, value: city }],
+        onlyReturnTotalCount: false,
+        pageIndex: parseInt(page),
+        pageSize: Math.min(parseInt(size), 50),
+        returnFilterConditions: true,
+        returnGeoConditions: true,
+        url: '',
+      }),
       signal: AbortSignal.timeout(15000),
     });
 
     const data = await r.json();
+    if (data.ret !== true) return res.json({ error: data.errmsg || 'API error', code: data.errcode });
 
-    if (data.ret !== true) {
-      return res.json({ error: data.errmsg || 'API error', code: data.errcode });
-    }
-
-    const listings = (data.data.items || []).map((item) => {
+    const listings = (data.data.items || []).map(item => {
       let rating = 0, reviews = 0, layout = '', wholeUnit = '';
-      (item.unitSummeries || []).forEach((s) => {
+      (item.unitSummeries || []).forEach(s => {
         const t = s.text;
-        if (t.includes('分')) {
-          const parts = t.split('/');
-          rating = parseFloat(parts[0]) || 0;
-          reviews = parseInt(parts[1]) || 0;
-        } else if (t.includes('床') || t.includes('居')) {
-          layout = t;
-        } else if (t.includes('整套') || t.includes('独立') || t.includes('单间')) {
-          wholeUnit = t;
-        }
+        if (t.includes('分')) { const p = t.split('/'); rating = parseFloat(p[0]) || 0; reviews = parseInt(p[1]) || 0; }
+        else if (t.includes('床') || t.includes('居')) layout = t;
+        else if (t.includes('整套') || t.includes('独立') || t.includes('单间')) wholeUnit = t;
       });
       return {
-        id: 'tj_' + item.unitId,
         unitId: item.unitId,
         name: item.unitName,
         platform: '途家民宿',
         roomType: layout || wholeUnit || '未知房型',
         currentPrice: item.finalPrice || item.productPrice || 0,
         previousPrice: item.productPrice || item.finalPrice || 0,
-        longitude: item.longitude,
-        latitude: item.latitude,
-        address: item.address,
-        rating,
-        reviews,
-        cityName: item.cityName,
-        districtName: item.districtName,
+        longitude: item.longitude, latitude: item.latitude,
+        address: item.address, rating, reviews,
+        cityName: item.cityName, districtName: item.districtName,
         occupancyRate: Math.min(0.95, Math.max(0.1, rating / 5)),
-        isOwn: false,
-        distance: '',
         source: 'tujia',
       };
     });
@@ -84,34 +194,66 @@ app.get('/api/tujia/search', async (req, res) => {
   }
 });
 
-// 根据经纬度反查城市名（高德地图）
+// ====== 错误日志上报 ======
+app.post('/api/errors', authRequired, (req, res) => {
+  const { error_type, message, stack } = req.body;
+  stmts.insertError.run(req.user.id, error_type, message, stack, req.headers['user-agent'] || '');
+  res.json({ success: true });
+});
+
+// ====== 管理后台 API ======
+app.get('/api/admin/stats', authRequired, adminRequired, (req, res) => {
+  const users = stmts.userCount.get().count;
+  const dau = stmts.dailyActiveUsers.get().count;
+  const totalCompetitors = db.prepare('SELECT COUNT(*) as count FROM competitors').get().count;
+  const totalLogs = db.prepare('SELECT COUNT(*) as count FROM usage_logs').get().count;
+  const todayLogs = db.prepare("SELECT COUNT(*) as count FROM usage_logs WHERE created_at >= date('now','localtime')").get().count;
+
+  const topActions = db.prepare(`
+    SELECT action, COUNT(*) as count FROM usage_logs
+    WHERE created_at >= date('now','-7 days','localtime')
+    GROUP BY action ORDER BY count DESC
+  `).all();
+
+  res.json({ users, dau, totalCompetitors, totalLogs, todayLogs, topActions });
+});
+
+app.get('/api/admin/users', authRequired, adminRequired, (req, res) => {
+  const users = stmts.allUsers.all();
+  const enriched = users.map(u => ({
+    ...u,
+    competitorCount: stmts.competitorCount.get(u.id).count,
+    lastActive: db.prepare('SELECT MAX(created_at) as t FROM usage_logs WHERE user_id = ?').get(u.id)?.t || null,
+  }));
+  res.json(enriched);
+});
+
+app.get('/api/admin/logs', authRequired, adminRequired, (req, res) => {
+  res.json(stmts.getLogs.all());
+});
+
+app.get('/api/admin/errors', authRequired, adminRequired, (req, res) => {
+  res.json(stmts.getErrors.all());
+});
+
+// ====== 地理反查（高德） ======
 app.get('/api/geo/city', async (req, res) => {
   const { lat, lng } = req.query;
   if (!lat || !lng) return res.status(400).json({ error: 'lat,lng required' });
-
   const key = process.env.AMAP_KEY || '';
-  if (!key) {
-    return res.json({ city: '', district: '', adcode: '', lat, lng, note: 'no AMAP_KEY' });
-  }
-
+  if (!key) return res.json({ city: '', district: '', lat, lng, note: 'no AMAP_KEY' });
   try {
-    const url = `https://restapi.amap.com/v3/geocode/regeo?key=${key}&location=${lng},${lat}&extensions=base`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(`https://restapi.amap.com/v3/geocode/regeo?key=${key}&location=${lng},${lat}&extensions=base`, { signal: AbortSignal.timeout(5000) });
     const d = await r.json();
     const comp = d.regeocode?.addressComponent || {};
-    res.json({
-      city: comp.city || comp.province || '',
-      district: comp.district || '',
-      adcode: comp.adcode || '',
-      lat, lng,
-    });
+    res.json({ city: comp.city || comp.province || '', district: comp.district || '', adcode: comp.adcode || '', lat, lng });
   } catch (e) {
-    res.json({ city: '', district: '', lat, lng, note: 'geocode fail' });
+    res.json({ city: '', district: '', lat, lng });
   }
 });
 
+// ====== 启动 ======
 app.listen(PORT, () => {
-  console.log(`🏡 homestay-monitor: http://localhost:${PORT}`);
-  console.log(`   Tujia API proxy: /api/tujia/search?city=dali`);
-  console.log(`   Geo API:          /api/geo/city?lat=25.6&lng=100.2`);
+  console.log(`🏡 homestay-monitor v2: http://localhost:${PORT}`);
+  console.log(`   默认管理员: admin / admin123`);
 });

@@ -426,6 +426,93 @@ body {
   font-size: 12px; padding: 10px 0;
 }
 
+/* ====== 登录/注册页 ====== */
+.login-wrap {
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(160deg, #f0fdfa 0%, #f5f6f8 50%, #e6f7f5 100%);
+}
+.login-card {
+  background: #fff; border-radius: 20px;
+  padding: 40px 36px; width: 100%; max-width: 400px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+  text-align: center;
+}
+.login-logo { font-size: 48px; margin-bottom: 8px; }
+.login-card h2 { font-size: 22px; color: var(--text); margin-bottom: 4px; }
+.login-sub { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
+.login-form { display: flex; flex-direction: column; gap: 12px; }
+.login-input {
+  padding: 12px 16px; border: 1px solid var(--border);
+  border-radius: 12px; font-size: 15px; outline: none;
+  transition: border-color 0.15s; background: #f9fafb;
+}
+.login-input:focus { border-color: var(--primary); background: #fff; }
+.login-btn {
+  padding: 12px; background: var(--primary); color: #fff;
+  border: none; border-radius: 12px; font-size: 16px; font-weight: 600;
+  cursor: pointer; transition: background 0.15s;
+  margin-top: 4px;
+}
+.login-btn:hover { background: var(--primary-dark); }
+.login-switch { font-size: 13px; color: var(--text-secondary); margin-top: 16px; }
+.login-switch a { color: var(--primary); text-decoration: none; font-weight: 500; }
+.login-error { font-size: 13px; color: #c62828; margin-top: 8px; min-height: 20px; }
+
+/* ====== 用户标签 + 退出 + 管理按钮 ====== */
+.user-label {
+  font-size: 12px; color: var(--text-secondary);
+  padding: 4px 10px; background: #f0fdfa;
+  border-radius: 12px; white-space: nowrap;
+}
+.logout-btn {
+  padding: 4px 12px; border: 1px solid var(--border);
+  border-radius: 16px; background: #fff;
+  color: var(--text-secondary); cursor: pointer;
+  font-size: 12px; transition: all 0.15s;
+}
+.logout-btn:hover { color: #c62828; border-color: #c62828; }
+.admin-btn {
+  padding: 4px 14px; border: 1px solid #92400e;
+  border-radius: 16px; background: #fef3c7;
+  color: #92400e; cursor: pointer;
+  font-size: 12px; font-weight: 500; transition: all 0.15s;
+}
+.admin-btn:hover { background: #fde68a; }
+
+/* ====== 管理后台面板 ====== */
+.admin-stats {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+}
+.admin-stat {
+  background: #f5f6f8; border-radius: 10px; padding: 16px; text-align: center;
+}
+.admin-stat .num {
+  font-size: 28px; font-weight: 800; color: var(--primary);
+}
+.admin-stat .lbl {
+  font-size: 12px; color: var(--text-secondary); margin-top: 4px;
+}
+.admin-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.admin-table th {
+  text-align: left; padding: 8px 10px; font-size: 10px;
+  color: var(--text-secondary); text-transform: uppercase;
+  border-bottom: 2px solid var(--border);
+}
+.admin-table td {
+  padding: 8px 10px; border-bottom: 1px solid #f5f6f8;
+}
+
+/* ====== 响应式 ====== */
+@media (max-width: 900px) {
+  .admin-stats { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .login-card { padding: 28px 20px; }
+}
+
 /* 响应式 */
 @media (max-width: 900px) {
   .hero-cards { grid-template-columns: 1fr; }
