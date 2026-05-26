@@ -100,8 +100,8 @@ class PriceChart {
 
     // 折线下面积渐变
     const gradient = ctx.createLinearGradient(0, padding.top, 0, H - padding.bottom);
-    gradient.addColorStop(0, 'rgba(66, 133, 244, 0.15)');
-    gradient.addColorStop(1, 'rgba(66, 133, 244, 0.01)');
+    gradient.addColorStop(0, 'rgba(13, 148, 136, 0.15)');
+    gradient.addColorStop(1, 'rgba(13, 148, 136, 0.01)');
 
     ctx.beginPath();
     ctx.moveTo(xScale(0), yScale(filtered[0].price));
@@ -120,7 +120,7 @@ class PriceChart {
     for (let i = 1; i < filtered.length; i++) {
       ctx.lineTo(xScale(i), yScale(filtered[i].price));
     }
-    ctx.strokeStyle = '#4285f4';
+    ctx.strokeStyle = '#0d9488';
     ctx.lineWidth = 2;
     ctx.stroke();
 
@@ -131,7 +131,7 @@ class PriceChart {
       const y = yScale(filtered[i].price);
       ctx.beginPath();
       ctx.arc(x, y, 3, 0, Math.PI * 2);
-      ctx.fillStyle = '#4285f4';
+      ctx.fillStyle = '#0d9488';
       ctx.fill();
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1;
@@ -144,7 +144,7 @@ class PriceChart {
     const ly = yScale(filtered[last].price);
     ctx.beginPath();
     ctx.arc(lx, ly, 5, 0, Math.PI * 2);
-    ctx.fillStyle = '#4285f4';
+    ctx.fillStyle = '#0d9488';
     ctx.fill();
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 2;

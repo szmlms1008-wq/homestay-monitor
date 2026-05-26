@@ -1,0 +1,12 @@
+{
+  "name": "homestay-monitor",
+  "version": "2.0.0",
+  "description": "民宿价格竞品监控看板",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

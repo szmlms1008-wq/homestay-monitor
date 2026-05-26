@@ -8,6 +8,18 @@
 </head>
 <body>
   <div id="app"></div>
+  <div id="searchModal" class="search-overlay" style="display:none;">
+    <div class="search-sheet">
+      <div class="search-header">
+        <h3>🔍 搜索附近民宿</h3>
+        <button class="search-close" onclick="document.getElementById('searchModal').style.display='none'">✕</button>
+      </div>
+      <div class="search-body" id="searchBody">
+        <div class="search-loading" id="searchLoading">正在获取位置...</div>
+        <div class="search-results" id="searchResults"></div>
+      </div>
+    </div>
+  </div>
   <script src="js/data.js"></script>
   <script src="js/api.js"></script>
   <script src="js/charts.js"></script>
