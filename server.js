@@ -5,10 +5,32 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { db, stmts } = require('./db');
 
+const CRAWLER_URL = process.env.CRAWLER_URL || 'http://127.0.0.1:9000';
+
 const app = express();
 const PORT = process.env.PORT || 3002;
 const JWT_SECRET = process.env.JWT_SECRET || 'homestay-monitor-secret-change-in-production';
 const JWT_EXPIRES = '7d';
+
+// 请求日志（调试用）
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    const icon = res.statusCode >= 400 ? '❌' : res.statusCode >= 300 ? '↪' : '✓';
+    console.log(`  ${icon} [${res.statusCode}] ${req.method} ${req.originalUrl} (${ms}ms)`);
+  });
+  next();
+});
+
+// 爬虫服务代理
+async function crawlerProxy(path, opts = {}) {
+  const { method = 'GET', body } = opts;
+  const fetchOpts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) fetchOpts.body = JSON.stringify(body);
+  const r = await fetch(CRAWLER_URL + path, fetchOpts);
+  return r.json();
+}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
@@ -48,11 +70,11 @@ app.post('/api/auth/register', (req, res) => {
   if (exists) return res.status(409).json({ error: '用户名已存在' });
 
   const hash = bcrypt.hashSync(password, 10);
-  const result = stmts.createUser.run(username, hash, 'user', '大理');
+  const result = stmts.createUser.run(username, hash, 'user', '');
   const token = jwt.sign({ id: result.lastInsertRowid, username, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
 
   logAction(result.lastInsertRowid, 'register', null, { username });
-  res.json({ token, user: { id: result.lastInsertRowid, username, role: 'user', city: '大理' } });
+  res.json({ token, user: { id: result.lastInsertRowid, username, role: 'user', city: '' } });
 });
 
 app.post('/api/auth/login', (req, res) => {
@@ -86,25 +108,57 @@ app.put('/api/me', authRequired, (req, res) => {
 
 // ====== Competitor API ======
 app.get('/api/competitors', authRequired, (req, res) => {
-  const competitors = stmts.getCompetitors.all(req.user.id);
-  res.json(competitors.map(c => ({
-    id: c.id,
-    unitId: c.unit_id,
-    name: c.name,
-    platform: c.platform,
-    roomType: c.room_type,
-    currentPrice: c.current_price,
-    previousPrice: c.previous_price,
-    occupancyRate: c.occupancy_rate,
-    longitude: c.longitude,
-    latitude: c.latitude,
-    address: c.address,
-    rating: c.rating,
-    reviews: c.reviews,
-    distance: c.distance,
-    source: c.source,
-    isOwn: !!c.is_own,
-  })));
+  const page = parseInt(req.query.page) || 1;
+  const pageSize = Math.min(parseInt(req.query.pageSize) || 30, 100);
+  const platform = req.query.platform || '';
+  const type = req.query.type || '';
+
+  let sql = 'SELECT * FROM competitors WHERE user_id = ?';
+  const params = [req.user.id];
+
+  if (platform) {
+    sql += ' AND platform = ?';
+    params.push(platform);
+  }
+  if (type === 'homestay') {
+    sql += " AND (platform = '民宿' OR name LIKE '%民宿%' OR name LIKE '%客栈%')";
+  } else if (type === 'hotel') {
+    sql += " AND (platform != '民宿' OR name NOT LIKE '%民宿%')";
+  }
+
+  // 总数
+  const countRow = db.prepare(sql.replace('SELECT *', 'SELECT COUNT(*) as c')).get(...params);
+  const total = countRow.c;
+
+  // 分页
+  const offset = (page - 1) * pageSize;
+  sql += ' ORDER BY id LIMIT ? OFFSET ?';
+  const rows = db.prepare(sql).all(...params, pageSize, offset);
+
+  res.json({
+    items: rows.map(c => ({
+      id: c.id,
+      unitId: c.unit_id,
+      name: c.name,
+      platform: c.platform,
+      roomType: c.room_type,
+      currentPrice: c.current_price,
+      previousPrice: c.previous_price,
+      occupancyRate: c.occupancy_rate,
+      longitude: c.longitude,
+      latitude: c.latitude,
+      address: c.address,
+      rating: c.rating,
+      reviews: c.reviews,
+      distance: c.distance,
+      source: c.source,
+      isOwn: !!c.is_own,
+    })),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(total / pageSize),
+  });
 });
 
 app.post('/api/competitors', authRequired, (req, res) => {
@@ -135,7 +189,7 @@ app.put('/api/competitors/:id', authRequired, (req, res) => {
   res.json({ success: true });
 });
 
-// ====== 途家搜索代理 ======
+// ====== 途家搜索代理（→ Python 爬虫服务） ======
 app.get('/api/tujia/search', authRequired, async (req, res) => {
   const { city, page = 0, size = 20 } = req.query;
   if (!city) return res.status(400).json({ error: 'city required' });
@@ -143,54 +197,15 @@ app.get('/api/tujia/search', authRequired, async (req, res) => {
   logAction(req.user.id, 'search', city, null);
 
   try {
-    const r = await fetch('https://www.tujia.com/bingo/pc/search/searchhouse', {
+    const data = await crawlerProxy('/crawl/search', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        Referer: 'https://www.tujia.com/', Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        conditions: [{ type: 1, value: city }],
-        onlyReturnTotalCount: false,
-        pageIndex: parseInt(page),
-        pageSize: Math.min(parseInt(size), 50),
-        returnFilterConditions: true,
-        returnGeoConditions: true,
-        url: '',
-      }),
-      signal: AbortSignal.timeout(15000),
+      body: { city, page: parseInt(page), size: Math.min(parseInt(size), 50) },
     });
 
-    const data = await r.json();
-    if (data.ret !== true) return res.json({ error: data.errmsg || 'API error', code: data.errcode });
-
-    const listings = (data.data.items || []).map(item => {
-      let rating = 0, reviews = 0, layout = '', wholeUnit = '';
-      (item.unitSummeries || []).forEach(s => {
-        const t = s.text;
-        if (t.includes('分')) { const p = t.split('/'); rating = parseFloat(p[0]) || 0; reviews = parseInt(p[1]) || 0; }
-        else if (t.includes('床') || t.includes('居')) layout = t;
-        else if (t.includes('整套') || t.includes('独立') || t.includes('单间')) wholeUnit = t;
-      });
-      return {
-        unitId: item.unitId,
-        name: item.unitName,
-        platform: '途家民宿',
-        roomType: layout || wholeUnit || '未知房型',
-        currentPrice: item.finalPrice || item.productPrice || 0,
-        previousPrice: item.productPrice || item.finalPrice || 0,
-        longitude: item.longitude, latitude: item.latitude,
-        address: item.address, rating, reviews,
-        cityName: item.cityName, districtName: item.districtName,
-        occupancyRate: Math.min(0.95, Math.max(0.1, rating / 5)),
-        source: 'tujia',
-      };
-    });
-
-    res.json({ total: data.data.totalCount, listings });
+    if (data.error) return res.json({ error: data.error });
+    res.json({ total: data.total, listings: data.listings });
   } catch (e) {
-    res.status(502).json({ error: 'upstream error: ' + e.message });
+    res.status(502).json({ error: '爬虫服务不可用: ' + e.message });
   }
 });
 
@@ -236,6 +251,93 @@ app.get('/api/admin/errors', authRequired, adminRequired, (req, res) => {
   res.json(stmts.getErrors.all());
 });
 
+// ====== 价格历史 API ======
+app.get('/api/competitors/:id/history', authRequired, (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const history = stmts.getPriceHistory.all(req.params.id, limit);
+  res.json(history.map(h => ({
+    id: h.id,
+    price: h.price,
+    occupancyRate: h.occupancy_rate,
+    recordedAt: h.recorded_at,
+  })));
+});
+
+// ====== 爬虫触发 API ======
+app.post('/api/crawl/trigger', authRequired, async (req, res) => {
+  try {
+    const data = await crawlerProxy('/crawl/refresh', { method: 'POST' });
+    logAction(req.user.id, 'trigger_crawl', null, data);
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: '爬虫服务不可用: ' + e.message });
+  }
+});
+
+// ====== 爬虫统计 API ======
+app.get('/api/crawl/stats', authRequired, async (req, res) => {
+  try {
+    const data = await crawlerProxy('/crawl/stats');
+    res.json(data);
+  } catch (e) {
+    res.json({ status: 'unavailable', error: e.message });
+  }
+});
+
+// ====== GPS 附近搜索 API ======
+app.post('/api/nearby', authRequired, async (req, res) => {
+  const { lat, lng, radius = 10.0, size = 30, platform = 'all' } = req.body;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat,lng required' });
+
+  logAction(req.user.id, 'nearby_search', null, { lat, lng, radius });
+
+  try {
+    const data = await crawlerProxy('/crawl/nearby', {
+      method: 'POST',
+      body: { lat: parseFloat(lat), lng: parseFloat(lng), radius: parseFloat(radius), size: parseInt(size), platform },
+    });
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: '附近搜索失败: ' + e.message });
+  }
+});
+
+// ====== 关键词搜索 API ======
+app.post('/api/search/keyword', authRequired, async (req, res) => {
+  const { keyword, city, size = 50 } = req.body;
+  if (!keyword) return res.status(400).json({ error: 'keyword required' });
+
+  logAction(req.user.id, 'keyword_search', city, { keyword });
+
+  try {
+    const data = await crawlerProxy('/crawl/search/keyword', {
+      method: 'POST',
+      body: { keyword, city: city || '', size: Math.min(parseInt(size), 100) },
+    });
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: '关键词搜索失败: ' + e.message });
+  }
+});
+
+// ====== 携程搜索 API ======
+app.get('/api/ctrip/search', authRequired, async (req, res) => {
+  const { city, page = 0, size = 20 } = req.query;
+  if (!city) return res.status(400).json({ error: 'city required' });
+
+  logAction(req.user.id, 'ctrip_search', city, null);
+
+  try {
+    const data = await crawlerProxy('/crawl/ctrip/search', {
+      method: 'POST',
+      body: { city, page: parseInt(page), size: Math.min(parseInt(size), 50) },
+    });
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: '携程搜索失败: ' + e.message });
+  }
+});
+
 // ====== 地理反查（高德） ======
 app.get('/api/geo/city', async (req, res) => {
   const { lat, lng } = req.query;
@@ -253,7 +355,15 @@ app.get('/api/geo/city', async (req, res) => {
 });
 
 // ====== 启动 ======
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🏡 homestay-monitor v2: http://localhost:${PORT}`);
   console.log(`   默认管理员: admin / admin123`);
+  try {
+    const h = await fetch(CRAWLER_URL + '/health');
+    const d = await h.json();
+    console.log(`   🕷️ 爬虫服务: ${CRAWLER_URL} (${d.status})`);
+  } catch (e) {
+    console.log(`   ⚠️ 爬虫服务未启动: ${CRAWLER_URL}`);
+    console.log(`   请先启动爬虫: cd crawler && python main.py`);
+  }
 });

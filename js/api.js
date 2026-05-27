@@ -40,10 +40,13 @@ const API = (() => {
     async getMe() { return request('GET', '/api/me'); },
     async updateMe(data) { return request('PUT', '/api/me', data); },
 
-    // 竞品
-    async fetchCompetitors() {
-      const data = await request('GET', '/api/competitors');
-      return Array.isArray(data) ? data : [];
+    // 竞品（分页）
+    async fetchCompetitors(page = 1, pageSize = 30, platform = '', type = '') {
+      const params = new URLSearchParams({ page, pageSize });
+      if (platform) params.set('platform', platform);
+      if (type) params.set('type', type);
+      const data = await request('GET', '/api/competitors?' + params.toString());
+      return data; // { items, total, page, pageSize, totalPages }
     },
     async addCompetitor(item) {
       return request('POST', '/api/competitors', item);
@@ -79,6 +82,32 @@ const API = (() => {
     async reportError(type, message, stack) {
       try { await request('POST', '/api/errors', { error_type: type, message, stack }); } catch (e) {}
     },
+
+    // 价格历史
+    async getPriceHistory(competitorId, limit = 100) {
+      return request('GET', '/api/competitors/' + competitorId + '/history?limit=' + limit);
+    },
+
+    // 关键词搜索
+    async searchKeyword(keyword, city = '', size = 50) {
+      return request('POST', '/api/crawl/search/keyword', { keyword, city, size });
+    },
+
+    // GPS 附近搜索
+    async searchNearby(lat, lng, radius = 50, size = 100, platform = 'all') {
+      return request('POST', '/api/nearby', { lat, lng, radius, size, platform });
+    },
+
+    // 携程搜索
+    async searchCtrip(city, page = 0, size = 30) {
+      const r = await fetch('/api/ctrip/search?city=' + encodeURIComponent(city) + '&page=' + page + '&size=' + size, { headers: headers() });
+      if (r.status === 401) { localStorage.removeItem('homestay_token'); window.location.reload(); return {}; }
+      return r.json();
+    },
+
+    // 爬虫触发
+    async triggerCrawl() { return request('POST', '/api/crawl/trigger'); },
+    async crawlStats() { return request('GET', '/api/crawl/stats'); },
 
     // 管理后台（仅 admin）
     async adminStats() { return request('GET', '/api/admin/stats'); },

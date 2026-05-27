@@ -16,7 +16,7 @@ db.exec(`
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT DEFAULT 'user',
-    city TEXT DEFAULT '大理',
+    city TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now','localtime')),
     last_login TEXT
   );
@@ -62,7 +62,34 @@ db.exec(`
     user_agent TEXT,
     created_at TEXT DEFAULT (datetime('now','localtime'))
   );
+
+  CREATE TABLE IF NOT EXISTS price_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competitor_id INTEGER NOT NULL,
+    price INTEGER NOT NULL,
+    occupancy_rate REAL DEFAULT 0.6,
+    recorded_at TEXT DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY (competitor_id) REFERENCES competitors(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS crawl_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL DEFAULT 'tujia',
+    city TEXT,
+    status TEXT DEFAULT 'pending',
+    result TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    finished_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_price_history_competitor ON price_history(competitor_id);
+  CREATE INDEX IF NOT EXISTS idx_price_history_recorded ON price_history(recorded_at);
+  CREATE INDEX IF NOT EXISTS idx_crawl_tasks_status ON crawl_tasks(status);
 `);
+
+// 数据库迁移（必须在预编译语句之前执行）
+try { db.exec('ALTER TABLE users ADD COLUMN role TEXT DEFAULT "user"'); } catch (e) {}
+try { db.exec('ALTER TABLE competitors ADD COLUMN last_crawled_at TEXT'); } catch (e) {}
 
 // 预编译语句（性能优化）
 const stmts = {
@@ -70,7 +97,7 @@ const stmts = {
   createUser: db.prepare('INSERT INTO users (username, password_hash, role, city) VALUES (?, ?, ?, ?)'),
   findByUsername: db.prepare('SELECT * FROM users WHERE username = ?'),
   findUserById: db.prepare('SELECT id, username, role, city, created_at, last_login FROM users WHERE id = ?'),
-  updateLastLogin: db.prepare(`UPDATE users SET last_login = datetime('now','localtime') WHERE id = ?`),
+  updateLastLogin: db.prepare("UPDATE users SET last_login = datetime('now','localtime') WHERE id = ?"),
   updateCity: db.prepare('UPDATE users SET city = ? WHERE id = ?'),
   userCount: db.prepare('SELECT COUNT(*) as count FROM users'),
   allUsers: db.prepare('SELECT id, username, role, city, created_at, last_login FROM users ORDER BY created_at DESC'),
@@ -85,19 +112,29 @@ const stmts = {
   // Usage logs
   insertLog: db.prepare('INSERT INTO usage_logs (user_id, action, city, details) VALUES (?,?,?,?)'),
   getLogs: db.prepare('SELECT ul.*, u.username FROM usage_logs ul LEFT JOIN users u ON ul.user_id = u.id ORDER BY ul.created_at DESC LIMIT 200'),
-  dailyActiveUsers: db.prepare(`SELECT COUNT(DISTINCT user_id) as count FROM usage_logs WHERE created_at >= date('now','localtime')`),
+  dailyActiveUsers: db.prepare("SELECT COUNT(DISTINCT user_id) as count FROM usage_logs WHERE created_at >= date('now','localtime')"),
 
   // Error logs
   insertError: db.prepare('INSERT INTO error_logs (user_id, error_type, message, stack, user_agent) VALUES (?,?,?,?,?)'),
   getErrors: db.prepare('SELECT * FROM error_logs ORDER BY created_at DESC LIMIT 100'),
-};
 
-// 数据库迁移：如果 users 表缺少 role 列则添加
-try {
-  db.exec('ALTER TABLE users ADD COLUMN role TEXT DEFAULT "user"');
-} catch (e) {
-  // 列已存在则忽略
-}
+  // Price history
+  insertPriceHistory: db.prepare('INSERT INTO price_history (competitor_id, price, occupancy_rate) VALUES (?,?,?)'),
+  getPriceHistory: db.prepare('SELECT * FROM price_history WHERE competitor_id = ? ORDER BY recorded_at DESC LIMIT ?'),
+  getLatestPrice: db.prepare('SELECT price, recorded_at FROM price_history WHERE competitor_id = ? ORDER BY recorded_at DESC LIMIT 1'),
+  cleanOldHistory: db.prepare("DELETE FROM price_history WHERE recorded_at < datetime('now','-30 days')"),
+
+  // Crawl tasks
+  createCrawlTask: db.prepare('INSERT INTO crawl_tasks (platform, city, status) VALUES (?,?,?)'),
+  updateCrawlTask: db.prepare("UPDATE crawl_tasks SET status=?, result=?, finished_at=datetime('now','localtime') WHERE id=?"),
+  getCrawlTasks: db.prepare('SELECT * FROM crawl_tasks ORDER BY created_at DESC LIMIT 50'),
+  getPendingCrawlTasks: db.prepare("SELECT * FROM crawl_tasks WHERE status='pending' ORDER BY created_at"),
+
+  // Competitor update helpers
+  updateCompetitorPrice: db.prepare("UPDATE competitors SET current_price=?, previous_price=?, occupancy_rate=?, last_crawled_at=datetime('now','localtime') WHERE id=?"),
+  getCompetitorsNeedingRefresh: db.prepare("SELECT * FROM competitors WHERE source='tujia' AND unit_id IS NOT NULL ORDER BY last_crawled_at ASC"),
+  getAllCompetitorsForRefresh: db.prepare('SELECT * FROM competitors WHERE source IS NOT NULL'),
+};
 
 // 确保默认 admin 账号存在
 const adminExists = stmts.findByUsername.get('admin');
